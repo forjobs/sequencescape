@@ -145,18 +145,57 @@ class PlatePurpose < Purpose
     PlatePurpose.create_with(stock_plate: true, cherrypickable_target: true).find_or_create_by!(name: 'Stock Plate')
   end
 
+  # The size of the {Plate} which will be created by default.
+  # @return [Integer] The default plate size. 96 unless specified
   def size
     super || 96
   end
 
+  # Creates a plate of the corresponding purpose. This is the primary means of creating new plates. Avoid using Plate::create!
+  # Can be called with optional first argument to disable well creation.
+  #
+  # = Outline
+  # - Extracts the atributes passed to create, and merges in the defaults defined by the PlatePurpose
+  # - Passes them into the {Plate::create_with_barcode!} action on the {Plate} class specified by #target_type
+  # - This method generates a new barcode if required, or generates a new one if the supplied barcode causes a clash
+  # - {Plate::create_with_barcode!} then passes the arguments into the standard ::create! action
+  # - We pop back into this method to generate the plate {Well wells} if required with the #construct! method on the plate wells association
+  # - Finally we return the plate that's just been created
+  #
+  # @note See issue https://github.com/sanger/sequencescape/issues/2597 relating to refactor of do_not_create_wells behaviour
+  #
+  # @overload create!(do_not_create_wells, attributes)
+  #   Creates a new plate but surpresses well generation. See https://github.com/sanger/sequencescape/issues/2597 for intent to deprecate this.
+  #   @param do_not_create_wells [Symbol] Optional parameter which, if present supresses well creation. Usually a symbol, eg. :do_not_create_wells
+  #   @param attributes [Hash] Rails attributes passed in to Plate::create! Additional options are documented below
+  #   @option attributes [Integer] :barcode Optional barcode number for generating a sanger_barcode. eg. 123 for DN123
+  #                                (Legacy - use :sanger_barcode instead)
+  #   @option attributes [BarcodePrefix] :barcode_prefix Optional barcode number for generating a sanger_barcode. (Defaults to #barcode_prefix)
+  #                                      (Legacy - use :sanger_barcode instead)
+  # @overload create!(attributes)
+  #   Creates a new plate complete with wells. This is the preferred option.
+  #   @param attributes [Hash] Rails attributes passed in to Plate::create! Additional options are documented below
+  #   @option attributes [Integer] :barcode Optional barcode number for generating a sanger_barcode. eg. 123 for DN123
+  #                                (Legacy - use :sanger_barcode instead)
+  #   @option attributes [BarcodePrefix] :barcode_prefix Optional barcode number for generating a sanger_barcode. (Defaults to #barcode_prefix)
+  #                                      (Legacy - use :sanger_barcode instead)
+  #
+  # @yield [Plate] block gets passed to standard rails Plate::create! method, which yields the Plate as normal.
+  # @return [Plate] The plate which has just been created
   def create!(*args, &block)
-    attributes          = args.extract_options!
-    do_not_create_wells = args.first.present?
-    attributes[:size] ||= size
+    attributes          = args.extract_options! # Extract any keyword/hash arguments.
+    # (@see https://api.rubyonrails.org/classes/Array.html#method-i-extract_options-21)
+    do_not_create_wells = args.first.present?    # Extract the optional do_not_create_wells prameter if present. false if absent
+    attributes[:size] ||= size                   # Set the default size to be that of the plate purpose (unless overidden)
     attributes[:purpose] = self
+
+    # Handle some legacy barcode options and pass them into the sanger_barcode option instead
     number = attributes.delete(:barcode)
     prefix = (attributes.delete(:barcode_prefix) || barcode_prefix).prefix
     attributes[:sanger_barcode] ||= { prefix: prefix, number: number }
+
+    # Pass the attributes through to {Plate::create_with_barcode! create_with_barcode!} method on the {Plate} class as specified
+    # by the #target_type attribute. (Should be {Plate} or one of its subclasses)
     target_class.create_with_barcode!(attributes, &block).tap do |plate|
       plate.wells.construct! unless do_not_create_wells
     end

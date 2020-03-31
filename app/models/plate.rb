@@ -10,6 +10,7 @@ require 'lab_where_client'
 # - {Well}: Plates can have multiple wells (most often 96 or 384) each of which can contain multiple samples.
 # - {PlateType}: Identifies the plates form factor, typically provided to robots to ensure tips are positioned correctly.
 #
+# @note Plates should be created through their {PlatePurpose#create! factory} on their corresponding PlatePurpose, not via Plate::create!
 class Plate < Labware
   include Api::PlateIO::Extensions
   include ModelExtensions::Plate
@@ -37,9 +38,19 @@ class Plate < Labware
   belongs_to :plate_purpose, foreign_key: :plate_purpose_id, inverse_of: :plates
   belongs_to :purpose, foreign_key: :plate_purpose_id
   has_many :wells, inverse_of: :plate, foreign_key: :labware_id do
+    # @note These methods are all available on the well association on {Plate}
+    # eg. plate.wells.construct!
+
     # Build empty wells for the plate.
+    # For each {Map well location} associated with the {Plate} creates a {Well} object via
+    # {Well::create!} and persists it to the database
     def construct!
       plate = proxy_association.owner
+      # Finds all {Map locations} associated with the plate and builds a hash of :location_id
+      # with which to construct the wells.
+      # @note This is sorted in row order for historic reasons. Column order will make more sense
+      #       nowadays, but may cause unexpected side effects in places relying on default database
+      #       order.
       plate.maps.in_row_major_order.ids.map do |location_id|
         { map_id: location_id }
       end.tap do |wells|
@@ -353,10 +364,17 @@ class Plate < Labware
     ancestors.order(created_at: :desc).where(plate_purpose_id: ancestor_purpose_id)
   end
 
+  # Generate a new plate with a barcode. Do not use directly, use via PlatePurpose#create!
+  # @note We can probably substiture *args with just 'attributes' here.
+  # @overload create_with_barcode!(attributes)
+  #   Creates a new plate without wells.
+  #   @param attributes [Hash] Rails attributes passed in to Plate::create! Additional options are documented below
+  #   @option attributes [Hash] :sanger_barcode Optional Hash of :number and :prefix to indicate desired barcode.
+  #                                             Will be overidden in the event of a clash.
   def self.create_with_barcode!(*args, &block)
     attributes = args.extract_options!
     attributes[:sanger_barcode] = safe_sanger_barcode(attributes[:sanger_barcode] || {})
-    create!(attributes, &block)
+    create!(attributes, &block) # Normal Rails #create! method
   end
 
   def self.safe_sanger_barcode(sanger_barcode)
